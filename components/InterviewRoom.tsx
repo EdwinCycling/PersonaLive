@@ -30,7 +30,7 @@ export const InterviewRoom: React.FC<Props> = ({ scenario, participant, onFinish
   const inputAudioContextRef = useRef<AudioContext | null>(null);
   const outputAudioContextRef = useRef<AudioContext | null>(null);
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
-  const processorRef = useRef<ScriptProcessorNode | null>(null);
+  const processorRef = useRef<ScriptProcessorNode | AudioWorkletNode | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const liveSessionRef = useRef<any>(null);
   const isConnectedRef = useRef(false);
@@ -203,47 +203,69 @@ export const InterviewRoom: React.FC<Props> = ({ scenario, participant, onFinish
           inputAudioTranscription: {},
         },
         callbacks: {
-          onopen: () => {
+          onopen: async () => {
             setIsConnected(true);
             setIsConnecting(false);
             setStatus('idle');
             
             if (!inputAudioContextRef.current) return;
-            const source = inputAudioContextRef.current.createMediaStreamSource(stream);
-            const processor = inputAudioContextRef.current.createScriptProcessor(4096, 1, 1);
-            
-            sourceRef.current = source;
-            processorRef.current = processor;
 
-            processor.onaudioprocess = (e) => {
-              if (!isConnectedRef.current) return;
-              if (!liveSessionRef.current) return;
-              const inputData = e.inputBuffer.getChannelData(0);
-              const l = inputData.length;
-              const int16 = new Int16Array(l);
-              for (let i = 0; i < l; i++) int16[i] = inputData[i] * 32768;
-              const pcmBase64 = encodeAudioToBase64(new Uint8Array(int16.buffer));
-              try {
-                const p = liveSessionRef.current.sendRealtimeInput({
-                  media: { data: pcmBase64, mimeType: 'audio/pcm;rate=16000' },
-                });
-                if (p && typeof p.catch === 'function') p.catch(() => {});
-              } catch {
+            try {
+              // Ensure AudioContext is running
+              if (inputAudioContextRef.current.state === 'suspended') {
+                await inputAudioContextRef.current.resume();
               }
-            };
 
-            source.connect(processor);
-            processor.connect(inputAudioContextRef.current.destination);
-            timerRef.current = setInterval(() => setElapsedTime(prev => prev + 1), 1000);
-            
-            if (scenario.sessionType === 'standard') {
+              // Load AudioWorklet
               try {
-                const p = liveSessionRef.current?.sendRealtimeInput({ text: 'De sessie is gestart. Open het gesprek.' });
-                if (p && typeof p.catch === 'function') p.catch(() => {});
-              } catch {
+                await inputAudioContextRef.current.audioWorklet.addModule('/audio-recorder-worklet.js');
+              } catch (e) {
+                console.error("AudioWorklet loading failed, falling back or handling error:", e);
+                // In production with strict CSP or path issues, this might fail. 
+                // Ensure audio-recorder-worklet.js is in public/
               }
-            } else {
-              setShowIntroPrompt(true);
+
+              const source = inputAudioContextRef.current.createMediaStreamSource(stream);
+              const processor = new AudioWorkletNode(inputAudioContextRef.current, 'audio-recorder-worklet');
+              
+              sourceRef.current = source;
+              processorRef.current = processor;
+
+              processor.port.onmessage = (e) => {
+                if (!isConnectedRef.current) return;
+                if (!liveSessionRef.current) return;
+                
+                // e.data is ArrayBuffer from worklet
+                const pcmBase64 = encodeAudioToBase64(new Uint8Array(e.data));
+                try {
+                  const p = liveSessionRef.current.sendRealtimeInput({
+                    media: { data: pcmBase64, mimeType: 'audio/pcm;rate=16000' },
+                  });
+                  if (p && typeof p.catch === 'function') p.catch(() => {});
+                } catch {
+                }
+              };
+
+              source.connect(processor);
+              // Note: AudioWorkletNode doesn't need to connect to destination if it's just processing 
+              // and sending data back via port, but connecting keeps the graph alive in some browsers.
+              // However, connecting it to destination might cause audio feedback if the worklet passes input to output.
+              // Our worklet doesn't write to outputs, so it's safe to connect or not, but generally good to connect to keep clock sync.
+              processor.connect(inputAudioContextRef.current.destination);
+
+              timerRef.current = setInterval(() => setElapsedTime(prev => prev + 1), 1000);
+              
+              if (scenario.sessionType === 'standard') {
+                try {
+                  const p = liveSessionRef.current?.sendRealtimeInput({ text: 'De sessie is gestart. Open het gesprek.' });
+                  if (p && typeof p.catch === 'function') p.catch(() => {});
+                } catch {
+                }
+              } else {
+                setShowIntroPrompt(true);
+              }
+            } catch (error) {
+              console.error("Error initializing audio worklet:", error);
             }
           },
           onmessage: async (message: LiveServerMessage) => {
