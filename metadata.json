@@ -1,0 +1,8 @@
+
+{
+  "name": "PersonaLive AI",
+  "description": "Een geavanceerd platform voor AI-gestuurde scenario interacties en persona evaluaties.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
