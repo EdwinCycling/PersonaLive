@@ -17,6 +17,12 @@ export default async (request: Request, context: Context) => {
   targetUrl.protocol = "https:"; // Default to https, upgrade to wss if needed
   targetUrl.host = "generativelanguage.googleapis.com";
   targetUrl.port = "";
+
+  const prefix = "/api/gemini-proxy";
+  if (targetUrl.pathname.startsWith(prefix)) {
+    const stripped = targetUrl.pathname.slice(prefix.length);
+    targetUrl.pathname = stripped.length > 0 ? stripped : "/";
+  }
   
   // The SDK might append /ws/... or /v1beta/...
   // We keep the pathname as is.

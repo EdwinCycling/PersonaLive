@@ -96,6 +96,9 @@ export const InterviewRoom: React.FC<Props> = ({ scenario, participant, onFinish
   const safeSend = (data: any) => {
     const session = liveSessionRef.current;
     if (!session) return;
+
+    const ws = session?.conn?.ws as WebSocket | undefined;
+    if (ws && ws.readyState !== WebSocket.OPEN) return;
     try {
       const p = session.sendRealtimeInput(data);
       if (p && typeof p.catch === 'function') p.catch(() => {});
@@ -165,7 +168,7 @@ export const InterviewRoom: React.FC<Props> = ({ scenario, participant, onFinish
         // Note: SDK usually appends version/service paths, so we point to our proxy root
         // If the SDK uses wss://, we need to ensure the proxy handles it.
         // We use window.location.origin to point to the current server (Netlify or Local)
-        httpOptions: { baseUrl: `${window.location.origin}/api/gemini-proxy` }
+        httpOptions: { baseUrl: `${window.location.origin}/api/gemini-proxy`, apiVersion: 'v1beta' }
       });
       
       inputAudioContextRef.current = new AudioContext({ sampleRate: 16000 });
