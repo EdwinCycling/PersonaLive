@@ -8,6 +8,10 @@
 [functions]
   directory = "netlify/functions"
 
+[[edge_functions]]
+  path = "/api/gemini-proxy/*"
+  function = "gemini-proxy"
+
 [[redirects]]
   from = "/api/gemini"
   to = "/.netlify/functions/gemini"

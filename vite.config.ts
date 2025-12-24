@@ -9,6 +9,29 @@ export default defineConfig(({ mode }) => {
       server: {
         port: 3000,
         host: '0.0.0.0',
+        proxy: {
+          '/api/gemini-proxy': {
+            target: 'https://generativelanguage.googleapis.com',
+            changeOrigin: true,
+            ws: true,
+            rewrite: (path) => {
+              // Strip the prefix
+              const newPath = path.replace(/^\/api\/gemini-proxy/, '');
+              // Parse URL to manipulate query params
+              // We use a dummy base because URL requires one
+              const url = new URL('https://placeholder' + newPath);
+              
+              // Replace dummy key with real server-side key
+              if (url.searchParams.has('key')) {
+                url.searchParams.delete('key');
+              }
+              url.searchParams.set('key', process.env.GEMINI_API_KEY || '');
+              
+              // Return relative path + query
+              return url.pathname + url.search;
+            }
+          }
+        }
       },
       plugins: [
         react(),

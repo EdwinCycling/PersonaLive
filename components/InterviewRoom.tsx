@@ -130,15 +130,17 @@ export const InterviewRoom: React.FC<Props> = ({ scenario, participant, onFinish
       setIsConnecting(true);
       setSessionStage('active');
 
-      let apiKey = sessionStorage.getItem('personaLive_gemini_api_key') || '';
-      if (!apiKey) {
-        const entered = window.prompt('Voer je Gemini API key in om de live sessie te starten.');
-        apiKey = (entered || '').trim();
-        if (apiKey) sessionStorage.setItem('personaLive_gemini_api_key', apiKey);
-      }
-      if (!apiKey) throw new Error('Error: Missing Gemini API key for live session');
-
-      const ai = new GoogleGenAI({ apiKey });
+      // Use a dummy key and point to our secure proxy
+      // The proxy (Netlify Edge Function or Vite Dev Server) will inject the real API key
+      const ai = new GoogleGenAI({ 
+        apiKey: 'dummy_key',
+        // Use the specific proxy endpoint
+        // Note: SDK usually appends version/service paths, so we point to our proxy root
+        // If the SDK uses wss://, we need to ensure the proxy handles it.
+        // We use window.location.origin to point to the current server (Netlify or Local)
+        baseURL: `${window.location.origin}/api/gemini-proxy`
+      });
+      
       inputAudioContextRef.current = new AudioContext({ sampleRate: 16000 });
       outputAudioContextRef.current = new AudioContext({ sampleRate: 24000 });
       
