@@ -24,6 +24,7 @@ export const InterviewRoom: React.FC<Props> = ({ scenario, participant, onFinish
   const [speechSpeed, setSpeechSpeed] = useState<number>(1.0); // 0.5 to 1.5
   const [audioEnabled, setAudioEnabled] = useState(false); // Default to off as requested
   const [isConnecting, setIsConnecting] = useState(false);
+  const [chatInput, setChatInput] = useState('');
   
   const [currentTranscription, setCurrentTranscription] = useState({ user: '', model: '' });
 
@@ -40,6 +41,7 @@ export const InterviewRoom: React.FC<Props> = ({ scenario, participant, onFinish
   const transcriptionRef = useRef({ user: '', model: '' });
   const ringtoneRef = useRef<HTMLAudioElement | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const pendingUserTextsRef = useRef<string[]>([]);
 
   useEffect(() => {
     if (messagesEndRef.current) {
@@ -91,6 +93,31 @@ export const InterviewRoom: React.FC<Props> = ({ scenario, participant, onFinish
     return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
+  const safeSend = (data: any) => {
+    const session = liveSessionRef.current;
+    if (!session) return;
+    try {
+      const p = session.sendRealtimeInput(data);
+      if (p && typeof p.catch === 'function') p.catch(() => {});
+    } catch {
+    }
+  };
+
+  const sendChatMessage = () => {
+    const text = chatInput.trim();
+    if (!text) return;
+    if (!isConnected || !liveSessionRef.current) {
+      alert('Error: Not connected');
+      return;
+    }
+
+    pendingUserTextsRef.current.push(text);
+    setMessages(prev => [...prev, { role: 'user', text, timestamp: new Date() } as Message]);
+    setChatInput('');
+    setShowIntroPrompt(false);
+    safeSend({ text });
+  };
+
   const startSession = async () => {
     if (scenario.sessionType === 'call') {
       setSessionStage('ringing');
@@ -138,7 +165,7 @@ export const InterviewRoom: React.FC<Props> = ({ scenario, participant, onFinish
         // Note: SDK usually appends version/service paths, so we point to our proxy root
         // If the SDK uses wss://, we need to ensure the proxy handles it.
         // We use window.location.origin to point to the current server (Netlify or Local)
-        baseURL: `${window.location.origin}/api/gemini-proxy`
+        httpOptions: { baseUrl: `${window.location.origin}/api/gemini-proxy` }
       });
       
       inputAudioContextRef.current = new AudioContext({ sampleRate: 16000 });
@@ -149,22 +176,16 @@ export const InterviewRoom: React.FC<Props> = ({ scenario, participant, onFinish
         outputAudioContextRef.current.suspend();
       }
 
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      mediaStreamRef.current = stream;
+      let stream: MediaStream | null = null;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        mediaStreamRef.current = stream;
+      } catch {
+        mediaStreamRef.current = null;
+      }
       
       const infoFieldsText = scenario.infoFields.map(f => `${f.label}: ${f.content}`).join('\n');
       const workflowText = scenario.workflow.map((s, i) => `${i+1}. ${s.label}: ${s.aiInstruction}`).join('\n');
-      
-      // Helper to safely send data to live session
-      const safeSend = (data: any) => {
-        if (!liveSessionRef.current) return;
-        try {
-          const p = liveSessionRef.current.sendRealtimeInput(data);
-          if (p && typeof p.catch === 'function') p.catch(() => {});
-        } catch (e) {
-          // Ignore WebSocket closing errors
-        }
-      };
 
       const systemInstruction = `
         JE BENT PERSONA: "${scenario.persona.name}". 
@@ -205,7 +226,7 @@ export const InterviewRoom: React.FC<Props> = ({ scenario, participant, onFinish
       const sessionPromise = ai.live.connect({
         model: AI_MODELS.LIVE_INTERACTION,
         config: {
-          responseModalities: [Modality.AUDIO],
+          responseModalities: [Modality.AUDIO, Modality.TEXT],
           speechConfig: {
             voiceConfig: { prebuiltVoiceConfig: { voiceName: scenario.persona.voiceName || 'Puck' } },
           },
@@ -216,10 +237,22 @@ export const InterviewRoom: React.FC<Props> = ({ scenario, participant, onFinish
         callbacks: {
           onopen: async () => {
             setIsConnected(true);
+            isConnectedRef.current = true;
             setIsConnecting(false);
             setStatus('idle');
-            
+
+            timerRef.current = setInterval(() => setElapsedTime(prev => prev + 1), 1000);
+
+            if (scenario.sessionType === 'standard') {
+              safeSend({ text: 'De sessie is gestart. Open het gesprek.' });
+            } else {
+              if (stream) {
+                setShowIntroPrompt(true);
+              }
+            }
+
             if (!inputAudioContextRef.current) return;
+            if (!stream) return;
 
             try {
               // Ensure AudioContext is running
@@ -263,20 +296,13 @@ export const InterviewRoom: React.FC<Props> = ({ scenario, participant, onFinish
               // However, connecting it to destination might cause audio feedback if the worklet passes input to output.
               // Our worklet doesn't write to outputs, so it's safe to connect or not, but generally good to connect to keep clock sync.
               processor.connect(inputAudioContextRef.current.destination);
-
-              timerRef.current = setInterval(() => setElapsedTime(prev => prev + 1), 1000);
-              
-              if (scenario.sessionType === 'standard') {
-                safeSend({ text: 'De sessie is gestart. Open het gesprek.' });
-              } else {
-                setShowIntroPrompt(true);
-              }
             } catch (error) {
               console.error("Error initializing audio worklet:", error);
             }
           },
           onmessage: async (message: LiveServerMessage) => {
-            const audioData = message.serverContent?.modelTurn?.parts[0]?.inlineData?.data;
+            const parts = message.serverContent?.modelTurn?.parts as any[] | undefined;
+            const audioData = parts?.find(p => p?.inlineData?.data)?.inlineData?.data;
             if (audioData && outputAudioContextRef.current) {
               setShowIntroPrompt(false);
               setStatus('speaking');
@@ -305,14 +331,24 @@ export const InterviewRoom: React.FC<Props> = ({ scenario, participant, onFinish
               const text = message.serverContent.outputTranscription.text;
               transcriptionRef.current.model += text;
               setCurrentTranscription(prev => ({ ...prev, model: transcriptionRef.current.model }));
+            } else {
+              const textParts = parts?.map(p => (typeof p?.text === 'string' ? p.text : '')).filter(Boolean) || [];
+              if (textParts.length > 0) {
+                const text = textParts.join('');
+                transcriptionRef.current.model += text;
+                setCurrentTranscription(prev => ({ ...prev, model: transcriptionRef.current.model }));
+              }
             }
             if (message.serverContent?.turnComplete) {
-              const uText = transcriptionRef.current.user;
+              const transcribedUserText = transcriptionRef.current.user;
+              if (!transcribedUserText && pendingUserTextsRef.current.length > 0) {
+                pendingUserTextsRef.current.shift();
+              }
               const mText = transcriptionRef.current.model;
-              if (uText || mText) {
+              if (transcribedUserText || mText) {
                 setMessages(prev => [
                   ...prev,
-                  ...(uText ? [{ role: 'user', text: uText, timestamp: new Date() } as Message] : []),
+                  ...(transcribedUserText ? [{ role: 'user', text: transcribedUserText, timestamp: new Date() } as Message] : []),
                   ...(mText ? [{ role: 'model', text: mText, timestamp: new Date() } as Message] : [])
                 ]);
               }
@@ -335,6 +371,10 @@ export const InterviewRoom: React.FC<Props> = ({ scenario, participant, onFinish
         }
       });
       liveSessionRef.current = await sessionPromise;
+
+      if (scenario.sessionType === 'standard') {
+        safeSend({ text: 'De sessie is gestart. Open het gesprek.' });
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Error: Failed to start session';
       alert(message.startsWith('Error:') ? message : `Error: ${message}`);
@@ -523,6 +563,29 @@ export const InterviewRoom: React.FC<Props> = ({ scenario, participant, onFinish
               <Mic size={14} className="text-exact-blue"/> 
               <span className="uppercase tracking-wide">Stel jezelf voor om te beginnen</span>
            </div>
+        </div>
+      )}
+
+      {isConnected && (
+        <div className="absolute bottom-24 left-1/2 -translate-x-1/2 z-30 w-[min(900px,calc(100%-2rem))]">
+          <div className="flex items-center gap-3 bg-white border border-gray-200 rounded-full shadow-lg px-4 py-3">
+            <input
+              value={chatInput}
+              onChange={(e) => setChatInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') sendChatMessage();
+              }}
+              placeholder="Typ je bericht en druk op Enter"
+              className="flex-1 bg-transparent outline-none text-sm"
+            />
+            <button
+              onClick={sendChatMessage}
+              disabled={!chatInput.trim()}
+              className="bg-exact-blue hover:bg-exact-blue/90 text-white px-5 py-2 rounded-full font-black text-[10px] uppercase tracking-widest disabled:opacity-40"
+            >
+              Verstuur
+            </button>
+          </div>
         </div>
       )}
 
