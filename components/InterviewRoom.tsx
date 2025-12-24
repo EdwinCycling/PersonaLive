@@ -226,6 +226,8 @@ export const InterviewRoom: React.FC<Props> = ({ scenario, participant, onFinish
               if (inputAudioContextRef.current.state === 'suspended') {
                 await inputAudioContextRef.current.resume();
               }
+              
+              if (!inputAudioContextRef.current) return;
 
               // Load AudioWorklet
               try {
@@ -235,6 +237,8 @@ export const InterviewRoom: React.FC<Props> = ({ scenario, participant, onFinish
                 // In production with strict CSP or path issues, this might fail. 
                 // Ensure audio-recorder-worklet.js is in public/
               }
+              
+              if (!inputAudioContextRef.current) return;
 
               const source = inputAudioContextRef.current.createMediaStreamSource(stream);
               const processor = new AudioWorkletNode(inputAudioContextRef.current, 'audio-recorder-worklet');
