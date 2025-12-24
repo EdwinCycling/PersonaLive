@@ -155,6 +155,17 @@ export const InterviewRoom: React.FC<Props> = ({ scenario, participant, onFinish
       const infoFieldsText = scenario.infoFields.map(f => `${f.label}: ${f.content}`).join('\n');
       const workflowText = scenario.workflow.map((s, i) => `${i+1}. ${s.label}: ${s.aiInstruction}`).join('\n');
       
+      // Helper to safely send data to live session
+      const safeSend = (data: any) => {
+        if (!liveSessionRef.current) return;
+        try {
+          const p = liveSessionRef.current.sendRealtimeInput(data);
+          if (p && typeof p.catch === 'function') p.catch(() => {});
+        } catch (e) {
+          // Ignore WebSocket closing errors
+        }
+      };
+
       const systemInstruction = `
         JE BENT PERSONA: "${scenario.persona.name}". 
         ROL: "${scenario.persona.role}" bij Exact.
@@ -237,13 +248,9 @@ export const InterviewRoom: React.FC<Props> = ({ scenario, participant, onFinish
                 
                 // e.data is ArrayBuffer from worklet
                 const pcmBase64 = encodeAudioToBase64(new Uint8Array(e.data));
-                try {
-                  const p = liveSessionRef.current.sendRealtimeInput({
-                    media: { data: pcmBase64, mimeType: 'audio/pcm;rate=16000' },
-                  });
-                  if (p && typeof p.catch === 'function') p.catch(() => {});
-                } catch {
-                }
+                safeSend({
+                  media: { data: pcmBase64, mimeType: 'audio/pcm;rate=16000' },
+                });
               };
 
               source.connect(processor);
@@ -256,11 +263,7 @@ export const InterviewRoom: React.FC<Props> = ({ scenario, participant, onFinish
               timerRef.current = setInterval(() => setElapsedTime(prev => prev + 1), 1000);
               
               if (scenario.sessionType === 'standard') {
-                try {
-                  const p = liveSessionRef.current?.sendRealtimeInput({ text: 'De sessie is gestart. Open het gesprek.' });
-                  if (p && typeof p.catch === 'function') p.catch(() => {});
-                } catch {
-                }
+                safeSend({ text: 'De sessie is gestart. Open het gesprek.' });
               } else {
                 setShowIntroPrompt(true);
               }
